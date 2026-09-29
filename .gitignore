@@ -1,0 +1,21 @@
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# 凭据与隐私：绝不要提交任何真实密钥
+.env
+*.key
+*.pem
+*_ed25519
+*uuid*txt
+*凭据*
+*凭证*
+secrets/
+private/
+
+# 本项目可能生成的临时产物
+*.log
+*.tmp
+/tmp/
