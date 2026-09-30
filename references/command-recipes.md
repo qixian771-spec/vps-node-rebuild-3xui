@@ -1,368 +1,165 @@
-# 命令速用块（可直接复制）
+# 按任务选择的命令块
 
-> 所有 `<尖括号>` 都是占位符，替换成你自己的值。
-> 建议**按编号顺序执行**。
+不是按序全执行的安装脚本。确认版本、实际路径、目标对象、已有授权与备份后，只选本次任务需要的块。示例在目标机执行；`<...>` 必须替换。不要在文档示例中填入真实密码或密钥。
 
-## 目录
-
-1. [环境初始化（含系统更新与基础工具）](#1-环境初始化)
-2. [开启并持久化 BBR](#2-开启并持久化-bbr)
-3. [安装 3x-ui](#3-安装-3x-ui)
-4. [补客户端记录（三张表 —— 最容易漏的一步）](#4-补客户端记录三张表)
-5. [复位面板账号密码与端口路径](#5-复位面板账号密码与端口路径)
-6. [启用 2FA](#6-启用-2fa)
-7. [脚本调不通时改读前端 JS](#7-脚本调不通时改读前端-js)
-8. [防火墙与安全组](#8-防火墙与安全组)
-9. [面板走 SSH 隧道（含 macOS 常驻）](#9-面板走-ssh-隧道)
-10. [端口状态判定](#10-端口状态判定)
-11. [重启后全面复核](#11-重启后全面复核)
-
----
-
-## 1. 环境初始化
+## 1. 只读环境与管理器核对
 
 ```sh
-export DEBIAN_FRONTEND=noninteractive
-
-# 系统更新（保留现有配置，避免交互卡住）
-apt-get update
-apt-get full-upgrade -y \
-  -o Dpkg::Options::=--force-confdef \
-  -o Dpkg::Options::=--force-confold
-
-# 基础工具
-apt-get install -y curl wget vim socat ca-certificates lsb-release gnupg ufw
-
-# 时区
-timedatectl set-timezone Asia/Shanghai
-
-# 确认更新干净
-apt list --upgradable 2>/dev/null | grep -c upgradable     # 期望 0
-[ -f /var/run/reboot-required ] && echo "需要重启" || echo "无需重启"
-```
-
----
-
-## 2. 开启并持久化 BBR
-
-```sh
-# 加载模块（注意是 tcp_bbr，不是 bbr）
-modprobe tcp_bbr
-
-# 确认已可用（必须能看到 bbr）
+uname -r
+timedatectl status
 sysctl -n net.ipv4.tcp_available_congestion_control
-
-# 持久化：模块开机加载 + 内核参数
-echo tcp_bbr > /etc/modules-load.d/bbr.conf
-grep -q '^net.core.default_qdisc=fq' /etc/sysctl.conf \
-  || echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
-grep -q '^net.ipv4.tcp_congestion_control=bbr' /etc/sysctl.conf \
-  || echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
-sysctl -p
-
-# 生效确认
-sysctl -n net.ipv4.tcp_congestion_control      # 期望 bbr
-sysctl -n net.core.default_qdisc               # 期望 fq
-```
-
-> **重启后必须再查一次** —— 持久化没配好会在重启后悄悄失效。
-
----
-
-## 3. 安装 3x-ui
-
-```sh
-bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
-
-systemctl is-active x-ui && systemctl is-enabled x-ui
-ss -tlnp | grep -E 'x-ui|xray'
-```
-
----
-
-## 4. 补客户端记录（三张表）
-
-**先在面板里建好入站**（拿到入站 ID），或直接写 `inbounds` 表，然后：
-
-```sh
-python3 - <<'PY'
-import sqlite3, datetime
-
-UUID        = "<你的UUID>"
-INBOUND_ID  = 1                    # 入站 ID
-EMAIL       = "node-1"
-FLOW        = "xtls-rprx-vision"
-
-db = sqlite3.connect("/etc/x-ui/x-ui.db")
-
-def cols(t):
-    return [r[1] for r in db.execute(f"pragma table_info({t})")]
-
-def ins(table, data):
-    d = {k: v for k, v in data.items() if k in cols(table)}
-    sql = f"insert into {table} ({','.join(d)}) values ({','.join('?'*len(d))})"
-    db.execute(sql, tuple(d.values()))
-    return db.execute("select last_insert_rowid()").fetchone()[0]
-
-now = int(datetime.datetime.now().timestamp() * 1000)
-
-cid = ins("clients", {
-    "email": EMAIL, "uuid": UUID, "flow": FLOW, "security": "auto",
-    "enable": 1, "tg_id": 0,                      # 必须是整数 0
-    "limit_ip": 0, "total_gb": 0, "expiry_time": 0,
-    "created_at": now, "updated_at": now,
-})
-
-# ★ 关键：flow 靠这一行才会写进生成的配置
-ins("client_inbounds", {
-    "client_id": cid, "inbound_id": INBOUND_ID,
-    "flow_override": FLOW,
-})
-
-ins("client_traffics", {
-    "client_id": cid, "inbound_id": INBOUND_ID, "enable": 1,
-})
-db.commit()
-
-print("clients        =", list(db.execute("select id,email,uuid,flow,enable from clients")))
-print("client_inbounds=", list(db.execute("select * from client_inbounds")))
-PY
-
-systemctl restart x-ui
-sleep 5
-
-# 判据：生成的配置里必须有 clients，且必须带 flow
-python3 -c "
-import json
-d = json.load(open('/usr/local/x-ui/bin/config.json'))
-for i in d['inbounds']:
-    if i.get('protocol') == 'vless':
-        print('端口', i.get('port'), '->', json.dumps(i['settings'].get('clients'), ensure_ascii=False))
-"
-```
-
-**期望输出**：`[{"email": "...", "flow": "xtls-rprx-vision", "id": "..."}]`
-**若没有 `flow`** → `client_inbounds.flow_override` 没写对。
-
----
-
-## 5. 复位面板账号密码与端口路径
-
-```sh
-apt-get install -y python3-bcrypt
-
-python3 - <<'PY'
-import sqlite3, bcrypt
-
-USERNAME = "<新用户名>"
-PASSWORD = "<新密码>"
-PORT     = "40786"
-BASEPATH = "/<你的路径>/"
-
-db = sqlite3.connect("/etc/x-ui/x-ui.db")
-
-h = bcrypt.hashpw(PASSWORD.encode(), bcrypt.gensalt(rounds=10)).decode()
-db.execute("update users set username=?, password=? where id=1", (USERNAME, h))
-
-def upsert(k, v):
-    if db.execute("select count(*) from settings where key=?", (k,)).fetchone()[0]:
-        db.execute("update settings set value=? where key=?", (v, k))
-    else:
-        db.execute("insert into settings(key,value) values(?,?)", (k, v))
-
-upsert("webPort", PORT)
-upsert("webBasePath", BASEPATH)
-db.commit()
-
-for r in db.execute("select id,username,length(password) from users"):
-    print("user:", r)
-for r in db.execute("select key,value from settings where key like 'web%'"):
-    print(" ", r)
-PY
-
-systemctl restart x-ui
-```
-
----
-
-## 6. 启用 2FA
-
-```sh
-python3 - <<'PY'
-import sqlite3, base64, os
-
-secret = base64.b32encode(os.urandom(20)).decode().rstrip('=')   # 32 字符 base32
-db = sqlite3.connect("/etc/x-ui/x-ui.db")
-
-for k, v in (("twoFactorEnable", "true"), ("twoFactorToken", secret)):
-    if db.execute("select count(*) from settings where key=?", (k,)).fetchone()[0]:
-        db.execute("update settings set value=? where key=?", (v, k))
-    else:
-        db.execute("insert into settings(key,value) values(?,?)", (k, v))
-db.commit()
-
-print("TOTP 密钥 =", secret)
-print("otpauth  = otpauth://totp/3x-ui:<用户名>?secret=%s&issuer=3x-ui" % secret)
-print("参数     = SHA1 / 6 位 / 30 秒")
-PY
-
-systemctl restart x-ui
-```
-
-**验证**：浏览器打开面板登录页 —— **出现「动态码」输入框才算成功**。
-**兜底（万一登录异常）**：
-
-```sh
-python3 -c "import sqlite3;d=sqlite3.connect('/etc/x-ui/x-ui.db');d.execute(\"delete from settings where key like 'twoFactor%'\");d.commit()"
-systemctl restart x-ui
-```
-
----
-
-## 7. 脚本调不通时改读前端 JS
-
-```sh
-B="http://127.0.0.1:<面板端口>/<webBasePath>"
-
-# 找出登录页引用的 JS
-JS=$(curl -s "$B/" | grep -oE 'assets/login-[A-Za-z0-9_-]+\.js' | head -1)
-echo "login bundle = $JS"
-
-# ★ 必须用 grep -oE 只输出片段：打包后的 JS 是超长单行
-curl -s "$B/$JS" | grep -oE '.{80}(twoFactor|login|password|form).{120}' | head -10
-```
-
-**常见收获**：登录接口路径、表单字段名（如 `twoFactorCode`）、2FA 判定接口
-（如 `POST /getTwoFactorEnable`）、成功后的跳转逻辑。
-
----
-
-## 8. 防火墙与安全组
-
-```sh
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow <SSH端口>/tcp
-ufw allow <节点端口>/tcp
-ufw allow <订阅端口>/tcp
-ufw enable
+sysctl -n net.ipv4.tcp_congestion_control
+sysctl -n net.core.default_qdisc
+systemctl is-active x-ui
+systemctl is-enabled x-ui
+ss -tlnp
 ufw status numbered
 ```
 
-> **云端安全组必须同步放行**，并**确认「关联实例」指向本机** ——
-> 改到未绑定的安全组上等于没改。改完记得点「应用」。
+确认 Xray 由 `x-ui` 管理还是独立服务管理，不启动另一套历史 `xray.service` 与现有监听抢端口。服务名、核心路径依实际安装确定。
 
----
+系统升级/重启仅适用于已纳入范围的部署维护任务。包管理器提示需重启时记录未测项，不为了验收客户端配置自行重启生产机。
 
-## 9. 面板走 SSH 隧道
+## 2. BBR 条件化启用
 
-**服务端：让面板只对 SSH 可见**
+先用上一节的 sysctl 看 BBR 是否已经可用。需要加载模块时使用 `modprobe tcp_bbr`；若内置或宿主已提供算法，不要求 `lsmod` 出现模块。
 
-```sh
-ufw delete allow <面板端口>/tcp                       # 面板从公网消失
-
-python3 -c "import sqlite3;d=sqlite3.connect('/etc/x-ui/x-ui.db');d.execute(\"delete from settings where key in ('webCertFile','webKeyFile')\");d.commit()"
-systemctl restart x-ui
-```
-
-**客户端（macOS）常驻隧道**
-
-`~/Library/LaunchAgents/com.example.panel-tunnel.plist`：
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.example.panel-tunnel</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/ssh</string>
-    <string>-N</string>
-    <string>-o</string><string>BatchMode=yes</string>
-    <string>-o</string><string>ExitOnForwardFailure=yes</string>
-    <string>-o</string><string>ServerAliveInterval=30</string>
-    <string>-o</string><string>ServerAliveCountMax=6</string>
-    <string>-o</string><string>ConnectTimeout=15</string>
-    <string>-L</string><string>40786:127.0.0.1:<面板端口></string>
-    <string><ssh别名></string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardErrorPath</key><string>/tmp/panel-tunnel.err</string>
-</dict>
-</plist>
-```
+在目标机允许、已决定启用 BBR 时，可用专属文件：
 
 ```sh
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.panel-tunnel.plist
-launchctl print gui/$(id -u)/com.example.panel-tunnel | grep -E 'state|pid'
+# 模块方案才需要；内置/宿主提供时不执行这一行
+printf '%s\n' tcp_bbr > /etc/modules-load.d/node-bbr.conf
 
-# 访问
-open http://localhost:40786/<webBasePath>/
-
-# 重建（隧道挂了时）
-launchctl kickstart -k gui/$(id -u)/com.example.panel-tunnel
+printf '%s\n' 'net.core.default_qdisc=fq' 'net.ipv4.tcp_congestion_control=bbr' \
+  > /etc/sysctl.d/99-node-bbr.conf
+sysctl --system
+sysctl -n net.ipv4.tcp_congestion_control
+sysctl -n net.core.default_qdisc
 ```
 
-> **提醒用户**：始终用 `localhost`，不要混用 `127.0.0.1` —— cookie 不通用会要求重登。
+先检查同名文件及冲突设置；已有内容需备份与有意合并。`sysctl --system` 输出错误不能忽略。安排重启后再验证持久化，未重启则不报告已做重启验收。
 
----
+## 3. 数据库一致备份与 schema
 
-## 10. 端口状态判定
+将 `/etc/x-ui/x-ui.db` 替换成确认过的源路径。下面代码只生成私有快照、输出路径和表结构，不输出行数据或凭据：
+
+```python
+from pathlib import Path
+import datetime, os, sqlite3
+
+os.umask(0o077)
+source = Path('/etc/x-ui/x-ui.db')
+stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+backup_dir = Path('/root/node-backups') / stamp
+backup_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+target = backup_dir / 'x-ui.db'
+with sqlite3.connect(source.as_uri() + '?mode=ro', uri=True) as src:
+    with sqlite3.connect(target) as dst:
+        src.backup(dst)
+    for table in ['inbounds', 'clients', 'client_inbounds', 'client_traffics', 'settings']:
+        columns = [r[1] for r in src.execute(f'PRAGMA table_info({table})')]
+        print(table, columns)
+target.chmod(0o600)
+print('backup_path', target)
+```
+
+## 4. 三表模型与目标 flow 修复
+
+仅在已确认三表模型和目标关联时适用。新增客户端优先走面板/API；直接写库前逐列检查真实约束、外键、已有记录，使用单个事务写完客户端、关联与流量记录。不能通过过滤未知列静默丢弃必需字段，也不能反复 INSERT 生成重复客户端。若缺少 `flow_override`，停止下方示例并查当前 fork 的受支持 API、保存模型或生成代码，再按真实 flow 来源修改唯一目标；不新增猜测列，不盲改全局 flow，也不自行重装。
+
+下面示例只修复**已有目标关联**的 `flow_override`，不会重建客户端或改动其他入站。两个环境变量是已核对的数字记录 ID，不是 UUID：
+
+```python
+import os, sqlite3
+
+client_id = int(os.environ['NODE_CLIENT_ID'])
+inbound_id = int(os.environ['NODE_INBOUND_ID'])
+with sqlite3.connect('/etc/x-ui/x-ui.db') as db:
+    columns = {r[1] for r in db.execute('PRAGMA table_info(client_inbounds)')}
+    required = {'client_id', 'inbound_id', 'flow_override'}
+    if not required <= columns:
+        raise RuntimeError('Unsupported client_inbounds schema')
+    db.execute('BEGIN IMMEDIATE')
+    count = db.execute('SELECT count(*) FROM client_inbounds WHERE client_id=? AND inbound_id=?',
+                       (client_id, inbound_id)).fetchone()[0]
+    if count != 1:
+        raise RuntimeError('Expected exactly one verified target association')
+    updated = db.execute('UPDATE client_inbounds SET flow_override=? WHERE client_id=? AND inbound_id=?',
+                         ('xtls-rprx-vision', client_id, inbound_id))
+    if updated.rowcount != 1:
+        raise RuntimeError('Unexpected update count')
+print('target_association_updated', True)
+```
+
+按已确认管理器重载并读取生成配置。只报告目标 clients 数、flow 一致性和密钥配对结果，不能把整个客户端对象或数据库行打印出来。配置校验通过后还需要真实代理认证与出口测试。
+
+## 5. 面板账号、端口与路径
+
+读取当前 fork 的受支持 CLI/API 和 schema 后，按用户要求修改目标账号。密码由安全输入/受限文件提供，先检查实际哈希格式；禁止在 shell 参数或 heredoc 示例里填真实密码。
+
+端口、base path 与 listen host 的设置键可能因 fork 不同；确认键存在后做事务 update/upsert，不假定用户 ID 为 1。报告字段是否生效，不报告值中的敏感内容。
+
+## 6. 2FA 设置和登录验收
+
+只读查看设置是否启用、密钥格式是否符合当前实现；不要输出密钥或 otpauth URL。按当前面板支持的流程让用户保存密钥并完成验证码录入。
+
+验收包括启用状态、输入框、正确验证码登录。失败先检查服务器时间和 TOTP 算法/位数/步长，不删除 `twoFactor*` 或关闭认证作为自动处理。
+
+## 7. 前端接口定位
+
+仅用于有限次请求纠正后仍无法确定接口约定的情况：
 
 ```sh
-TARGET=<目标IP>
-PORT=<端口>
-
-# ① 本机路由接口（若是 utun* 则本机裸连接测试无效）
-route -n get $TARGET 2>/dev/null | grep -E 'gateway|interface'
-
-# ② 送一个"必定失败"的对照组 —— 若它也"成功"，说明测法被本地接管污染
-python3 - <<PY
-import socket
-def probe(ip, port, t=5):
-    s = socket.socket(); s.settimeout(t)
-    try:
-        s.connect((ip, port)); return "OPEN"
-    except socket.timeout: return "超时"
-    except ConnectionRefusedError: return "拒绝(RST)"
-    except Exception as e: return type(e).__name__
-    finally: s.close()
-print("对照 1.2.3.4:443 ->", probe("1.2.3.4", 443))     # 应"超时"；若 OPEN 则测法无效
-print(f"目标 $TARGET:$PORT ->", probe("$TARGET", $PORT))
-PY
+PANEL_BASE='http://127.0.0.1:<panel-port>/<base-path>'
+LOGIN_JS=$(curl --fail --silent --show-error "$PANEL_BASE/" \
+  | rg -o 'assets/login-[A-Za-z0-9_-]+\.js' | head -1)
+# 必须确认非空、为页面实际资源路径，再请求；只输出匹配片段
+curl --fail --silent --show-error "$PANEL_BASE/$LOGIN_JS" \
+  | rg -o '.{0,60}(twoFactor|form|login).{0,100}' | head -8
 ```
 
-**判读**：
+bundle 是静态代码证据，不能代替后端状态或成功登录。不要输出整条压缩 JS、会话 cookie 或包含凭据的响应。
 
-| 现象 | 含义 |
-|---|---|
-| 超时 | 包被 DROP → **没通**（或服务未监听）|
-| 拒绝(RST) | 包到达主机 → **通了**，只是没服务 |
-| OPEN | 有服务在监听，通的 |
+## 8. 防火墙与安全组
 
-> **被测端口上必须先有服务在监听**，否则测不出"放行"状态。
-> 临时监听可用：`systemd-run --unit=t443 --collect python3 -c "..."`（比 `nohup &` 更可靠。
+先确认并放行实际 SSH 端口，保持已有管理连接。在已核对影响的目标规则上修改，然后用 `ufw status numbered`、实际监听和外部访问复核。安全组从实例详情回读协议、端口、源范围、组绑定和保存/应用结果。
 
----
+不把 `ufw disable` 当默认排障步骤；优先只读检查实际 nftables/iptables 链与抓包。如果已授权的短暂实验确需调整规则，应保存原状态并可靠恢复，不借此建立故障直连路径。
 
-## 11. 重启后全面复核
+## 9. SSH 隧道管理面板
+
+先按实际配置将面板绑定 loopback，核对主机/云端其他规则与 IPv6；不要仅删除一条 ufw 规则便宣称公网不可达。
 
 ```sh
-echo "=== 内核 ==="; uname -r; uptime -p
-echo "=== BBR ==="; sysctl -n net.ipv4.tcp_congestion_control; sysctl -n net.core.default_qdisc
-echo "=== 待升级 ==="; apt list --upgradable 2>/dev/null | grep -c upgradable
-echo "=== 服务 ==="; for s in x-ui ssh ufw fail2ban; do printf "%s=%s " "$s" "$(systemctl is-active $s)"; done; echo
-echo "=== 监听 ==="; ss -tlnp | grep -E 'x-ui|xray|sshd'
-echo "=== 防火墙 ==="; ufw status | head -1
-echo "=== 入站与客户端 ==="; python3 -c "
-import sqlite3, json
-db = sqlite3.connect('/etc/x-ui/x-ui.db')
-for r in db.execute('select id,remark,port,protocol,enable from inbounds'): print(' ', r)
-print(' client_inbounds:', list(db.execute('select * from client_inbounds')))
-"
+ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+  -L 127.0.0.1:<local-port>:127.0.0.1:<panel-port> <ssh-alias>
 ```
 
-**再在客户端侧实测**：节点延迟 + **出口 IP**（不能只看端口通不通）。
+用户选择常驻管理时再建立本机服务；重连恢复同一 SSH 目标。验证本地监听只绑定 loopback、隧道失败时不另开公网面板。已有面板 HTTPS 证书不应无条件删除。
+
+## 10. 端口与回落取证
+
+目标机记录监听、指定协议/端口抓包和同窗正常端口对照；外部独立 VPS 发起探测。抓包只记录需要的 TCP 头与时间，不捕捉内容；过滤器、接口、命名空间、时间必须核对。
+
+```sh
+# macOS 本机只读路由核对；utun 路径说明本机 connect 可能被代理接管
+route -n get <target-ip>
+
+# 在目标 VPS 上验证 REALITY 未认证回落，保持 TLS 校验
+openssl s_client -connect 127.0.0.1:<node-port> \
+  -servername <reality-sni> -tls1_3 -verify_return_error </dev/null
+```
+
+该回落检查不证明 UUID/short ID 正确。`curl --noproxy '*'` 只忽略应用代理环境变量，不能绕过 TUN；不要关闭 TUN 来证明直连。选取自己控制、明确关闭的端口作为负对照，不能把 `1.2.3.4` 等第三方真实地址称为“必定失败”。TEST-NET 地址只用于文档占位，也不是已证明会失败的网络对照。
+
+## 11. 生成配置与重载验收
+
+```sh
+<verified-xray-binary> -test -c <generated-config-path>
+<verified-mihomo-binary> -t -d <isolated-validation-directory> -f <config-path>
+```
+
+通过只是语法/结构可用，还要核对有效管理器、活跃 GUI 订阅和真实出口。Mihomo 离线校验优先独立数据目录与只读地理数据，避免抢生产 cache 锁。
+
+多节点、应用代理与故障验收见 [Clash 路由与 DNS](clash-routing-dns.md)、[Claude 网络保护](claude-network.md)。重启后检查仅在已安排重启时执行；重启未做就保留未测状态。

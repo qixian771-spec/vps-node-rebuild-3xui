@@ -1,114 +1,69 @@
-# 排障速查表：症状 → 根因 → 修法
+# 排障：观察证据、结论边界与下一步
 
-> 用法：先按下表定位症状，再跳到对应修法。
-> 每条都标注了 **判据**（怎么确认真的是这个原因），避免"猜着修"。
+先确定服务端、客户端或应用层哪一层失败。不能拿上一层成功代替下一层验收；不要用反复重装、禁用防护或自动换出口掩盖根因。
 
-## 目录
+## A. 节点认证与服务管理
 
-- [A. 节点连不上 / 认证失败](#a-节点连不上--认证失败)
-- [B. 面板相关](#b-面板相关)
-- [C. 网络与端口](#c-网络与端口)
-- [D. 系统与内核](#d-系统与内核)
-- [E. 客户端兼容](#e-客户端兼容)
-- [F. 测法本身出错（最隐蔽的一类）](#f-测法本身出错最隐蔽的一类)
+| 症状 | 检查证据 | 下一步 |
+|---|---|---|
+| 监听正常但代理认证失败 | 当前生成配置里目标 clients 数、凭据一致性、客户端参数；先查实际 schema | 三表模型核对客户端/入站/流量关联，其他模型按实际结构处理 |
+| Vision 连接失败 | 当前模型的 flow 来源、生成的 flow与客户端 flow；有 `flow_override` 才查该关联；`http_code=000` 本身不定位原因 | 缺列时查该 fork 的受支持 API/生成代码，不猜测建列或盲写全局字段；按实际来源修复唯一目标后实测 |
+| `tgId` 解析失败 | 实际整数列和类型错误 | 按 schema 写整数，不填空字符串 |
+| Xray test 通过但业务不通 | 配置语法通过而实际认证/出口失败 | 分别检查网络、身份和路由，不能宣布节点已用得了 |
+| 本机回落返回伪装站证书 | TLS 未认证回落有效 | 仍需真正 VLESS/REALITY 客户端认证与出口测试 |
+| x-ui 正常、旧 xray.service failed | 监听 PID、x-ui 子进程与服务管理关系 | 管理实际负责监听的服务，不启动历史服务抢端口 |
+| Mihomo REALITY 认证失败 | 相同身份、版本、SNI、short ID、密钥和两端日志 | 评估实际兼容性，不能只凭 Xray 25/26 就断言 ML-KEM 开关是根因 |
 
----
+## B. 面板与认证
 
-## A. 节点连不上 / 认证失败
+| 症状 | 检查证据 | 下一步 |
+|---|---|---|
+| CLI 修改参数只打印帮助 | 当前 CLI 子命令、版本/API 文档 | 使用受支持路径；需要改库时备份并检查 schema |
+| 全部脚本 API 403 | 方法/路径/会话/CSRF/权限；有限次纠正 | 只读 bundle 定位接口，真实浏览器验证；不自动绕过访问控制 |
+| 2FA 输入框出现但登录失败 | 时间同步、密钥编码、参数、真正登录结果 | 保留保护修复错误，不自动删除 2FA 设置 |
+| 面板本机正常，公网不可达 | listen host、防火墙/安全组与实际外部探测 | 区分已有私有管理设计与故障；已选 SSH 隧道时验证该路径 |
+| 80/443 入站不通，证书验证失败 | 实际 CA、标识类型与挑战协议 | 域名可评估 DNS-01；REALITY 节点自身不需要公开 CA 证书 |
 
-| 症状 | 根因 | 判据 | 修法 |
-|---|---|---|---|
-| 进程正常、端口在听，**客户端认证失败** | 客户端记录只写进 `inbounds` 表，没建 `clients` / `client_inbounds` / `client_traffics` | 读 `bin/config.json` → `settings.clients` 为 `[]` | 补三张表（见 `command-recipes.md` §4）|
-| 补了客户端表，**仍然完全不通**（客户端侧 `http_code=000`）| `flow` 缺失 —— 它来自 **`client_inbounds.flow_override`**，不在 `inbounds.settings` 的 JSON 里 | 读 `bin/config.json` → 客户端对象里**没有 `flow` 字段** | `update client_inbounds set flow_override='xtls-rprx-vision'` 后重启 |
-| 写入站时报 `tgId` 类型错误 | `clients.tg_id` 必须是**整数** | 报错原文：`cannot unmarshal string into Go struct field .0.tgId of type int64` | 填 `0`，不要填 `""` |
-| 服务起不来 / 配置校验失败 | `stream_settings` 或其 JSON 字符串格式错 | `xray-linux-amd64 -test -c bin/config.json` | 用 Python `json.dumps(..., separators=(",",":"))` 生成，别手拼 |
-| **完全不通，且没有任何日志** | 可能是 `flow` 或 `security` 不匹配 | 服务端 `openssl s_client -connect 127.0.0.1:<端口> -servername <SNI>` 看是否返回伪装站证书 | 对照 `SKILL.md` §10 逐项核对 |
+## C. 外部 SYN 未到观测点
 
----
+以同一外部探测源、同一时间窗、同一实例的正常端口为正对照。结合监听、抓包、规则计数、实例 IP 和安全组回读，避免仅凭计数 0 或探测网站结果定性。
 
-## B. 面板相关
+| 可能层 | 可执行区分手段 | 仍需保留的边界 |
+|---|---|---|
+| 抓包或计数方法不适用 | 正对照端口必须确实有 SYN；核对接口、netns、v4/v6、过滤器、时间与真正匹配的规则链 | 某条 ufw 规则 0 不代表其他链或观测点也没包 |
+| 安全组未应用/未绑定 | 从实例详情核对组 ID、实例绑定，保存/应用后回读手填规则；使用同组正常端口对照 | 控制台显示规则不证明下发，A/B 结论只适用被测平台 |
+| 独立云防火墙/默认策略 | 查实例与 IP 层所有独立入口、关联策略/流日志；有限次单变量规则实验 | 不要为测试关闭全组规则或开放全部端口 |
+| NAT/端口映射 | 对比实例接口与分配信息、NAT/一对一映射/允许的外部端口；用正常映射端口验证 | 公网 IP 不在 NIC 上不单独证明端口受限，可能是平台一对一 NAT |
+| DDoS/清洗/宿主过滤 | 查清洗和端口策略、宿主或 XDP 等观测点前过滤；向供应商提供同步时间窗证据 | 无流日志/平台反馈通常只能定位到此前路径，不能精确归因 |
+| ISP/路径或地址状态 | 多个独立外部 ASN/地区对照，同 IP 正常端口、同端口其他受控实例对照 | 多地失败提高上层过滤可能性，但不构成 100% 定论 |
+| 返回路径或本机链 | 抓包显示 SYN 到达；检查 SYN-ACK/RST 是否发出，其他规则、策略路由和 rp_filter | 与“目标未见 SYN”的分支不同，不要混在一个结论里 |
 
-| 症状 | 根因 | 判据 | 修法 |
-|---|---|---|---|
-| 忘了面板密码 / 要换账号 | 部分 fork 的 CLI **只有 `settings`（查看）没有 `setting`（修改）** | `x-ui setting -username x` 只打印帮助菜单 | 直接改数据库（`command-recipes.md` §5）|
-| 改了面板端口/路径不生效 | 该 fork 的 CLI 不支持 | 同上 | 改 `settings` 表的 `webPort` / `webBasePath`（upsert）后重启 |
-| **所有 API 调用返回 403** | fork 的防自动化机制 | 连匿名的 `POST /getTwoFactorEnable` 也 403；补 `Sec-Fetch-*`/`Origin`/`Referer`/UA 全部无效 | **不要再试 curl**，改读前端 JS（`command-recipes.md` §7）|
-| 登录页看不到动态码输入框 | 2FA 未启用，或密钥写入位置不对 | 前端 JS 会先请求 `/getTwoFactorEnable` | 看 `settings` 表是否有 `twoFactorEnable=true` + `twoFactorToken` |
-| **配了 2FA 之后登录一直失败** | 密钥格式不被识别（要码但码永不匹配）| 登录页出现动态码框，但任何码都不通过 | **立即兜底**：删掉 `twoFactor*` 两个键并重启（`SKILL.md` §6）|
-| 面板打不开，但 SSH 正常 | 面板端口被公网屏蔽（或被 ufw 移除）| 服务器本地 `curl -sk http://127.0.0.1:<端口>/` 是否 200 | 走 SSH 隧道（`command-recipes.md` §9）|
-| `systemctl disable/stop` 报 `Interactive authentication required` | 漏了 `sudo`（polkit 要求交互认证）| 报错原文 | 加 `sudo` |
+同源把节点换到已授权高位端口能验证端口相关性，不能自动证明过滤是哪一层。不更换供应商时可评估正确应用策略、供应商解除过滤/换 IP、已有支持的端口映射或用户授权的前置转发；CDN 并不能直接代理任意 VLESS RAW+REALITY TCP，协议变更需单独方案和实测。
 
----
+## D. 系统、TUN 与测法
 
-## C. 网络与端口
+| 观察 | 准确解释 | 下一步 |
+|---|---|---|
+| `lsmod` 查不到 BBR | 可能内置或由宿主提供 | 查 available/current sysctl；需要加载时模块名为 tcp_bbr |
+| 模块加载被拒 | 实例不能自行加载模块，不能据此判定算法不可用 | 查看宿主是否已提供 bbr；不可用才报告限制 |
+| TCP 超时 | 握手未完成，不能确定丢包层 | 独立探测+目标抓包+正对照 |
+| RST | 某端拒绝，可能由主机或中间设备产生 | 目标端抓包确认来源，不直接当“端口已放行” |
+| TUN 下任何 TCP connect 都成功 | 可能只完成本地代理接受 | 目标端实际握手/独立外测/完整 TLS 和业务探针 |
+| `--noproxy '*'` 显示代理出口 | 应用代理被忽略，TUN 仍可接管 | 标为 TUN 路径测试，不标为裸直连测试 |
+| `/delay` 与端到端耗时不同 | 测试口径不同，网络建连/DNS成本可能不同 | 比较时统一 URL、超时、路径和时间窗 |
+| 没有重启就称持久化已实测 | 配置已写与重启采用混淆 | 记录当前状态与未测项，按已安排重启复查 |
 
-| 症状 | 根因 | 判据 | 修法 |
-|---|---|---|---|
-| 从外面连某端口**超时** | 端口**没通**（上游/安全组 DROP），或**服务没在监听** | **必须先让服务监听再测**；有服务仍超时 = 被 DROP | 检查安全组是否放行、**是否关联到本实例** |
-| 端口返回**拒绝（RST）** | 端口**是通的**，只是没有服务监听 | RST 说明包已到主机 | 启动服务即可 |
-| 安全组改了**没生效** | ① 改到了**未绑定实例**的安全组；② 忘了点「应用」 | 看规则列表的「关联实例」数是否为 0 | 到**实例详情的防火墙页**改，或把安全组绑定到实例 |
-| **80/443 一直超时**，配置全对 | 上游/机房层 DROP 这两个端口 | 用外部 vantage 测（非本机）；本机测需确认路由不是 `utun*` | 换非 80/443 端口跑节点；**证书只能走 DNS-01 或放弃** |
-| 安全组放行了但还是不通 | 可能是 **ufw** 拦的 | `ufw status` | `ufw allow <端口>/tcp` |
-| 端口通了但**节点用不了** | 端口通 ≠ 能认证 | 客户端实测延迟 + 出口 IP | 回到 A 节 |
+## E. Clash 与 Claude
 
----
+| 症状 | 检查 | 下一步 |
+|---|---|---|
+| GUI 选一个节点，部分国外流量走另一个 | 其他分流组、fallback/url-test、GLOBAL、旧连接、活跃 profile | 单手动出口；切换后关闭旧连接并实测，见 [Clash 路由与 DNS](clash-routing-dns.md) |
+| 改 YAML 后重载又恢复旧 DNS | profile、merge/script、GUI DNS覆写、生成配置 | 修改持久源及正确层的完整 DNS，不只改生成文件 |
+| 显式国外 domain 仍使用国内 DNS | nameserver-policy 实际键顺序与 matcher | 普通域名不会天然胜过 geosite；显式块放 CN 前 |
+| 节点不可用时网站/解析继续成功 | 测试走错生产端口/旧 cache、出口组或 DNS 有直连路径 | 用无缓存隔离副本验证，禁止换出口或直连掩盖失败 |
+| Claude 桌面 env 设置了但不能证明采用 | 原生固定代理键、正确本地配置库、MDM优先级、启动日志 | 按 [Claude 网络保护](claude-network.md) 验证普通桌面实际启动 |
+| Claude CLI 没安装 | 只有用户配置文件或 SDK 内置副本 | 标“已预置”，不假装实际 CLI 已通过 |
+| TLS/HTTP 403 已返回 | 传输到服务成功，业务被拒或挑战 | 记录传输成功和业务未验证，不保证登录/推理可用 |
+| DoH 抓包有几个很小 TCP 包 | 可能 ACK、重传、TLS关闭，与DNS探针未关联 | 同一编排触发唯一查询，校时、窗口和业务字节；未关联则 inconclusive |
 
-## D. 系统与内核
-
-| 症状 | 根因 | 判据 | 修法 |
-|---|---|---|---|
-| `lsmod \| grep bbr` **查不到** | Ubuntu 上 BBR 是模块 **`tcp_bbr`**，模块名带前缀；也可能是内置 | `sysctl -n net.ipv4.tcp_available_congestion_control` 是否含 `bbr` | `modprobe tcp_bbr` |
-| `modprobe bbr` 报"模块不存在" | 模块名错了 | 同上 | 用 `tcp_bbr` |
-| **重启后 BBR 失效** | 只写了 `sysctl.conf`，没配开机加载模块 | 重启后 `sysctl -n net.ipv4.tcp_congestion_control` 变回 `cubic` | `echo tcp_bbr > /etc/modules-load.d/bbr.conf` |
-| `modprobe tcp_bbr` 报 **`Operation not permitted`** | 实例是**容器/受限虚拟化**，宿主禁止加载内核模块 | 报错原文；`ls /lib/modules/$(uname -r)/kernel/net/ipv4/` 里**有** `tcp_bbr.ko` 但加载被拒 | **本机无法启用** → 需服务商开权限或换机器，别再折腾 |
-| 升级后要求重启 | 内核或 glibc 等已更新 | `cat /var/run/reboot-required` | 择时重启；**注意会中断节点 1–2 分钟** |
-| 升级时卡在交互确认 | 配置文件冲突 | 观察到 `*** config file ...` 提示 | 加 `-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold` 并设 `DEBIAN_FRONTEND=noninteractive` |
-
----
-
-## E. 客户端兼容
-
-| 症状 | 根因 | 判据 | 修法 |
-|---|---|---|---|
-| **`REALITY authentication failed`**，但 SNI / 密钥 / shortId 全对 | **mihomo/Clash 未启用 X25519+ML-KEM-768 混合密钥交换**（服务端是 Xray 25/26 新版 REALITY）| **同一配置用 xray 客户端测是通的，mihomo 不通** | 在节点 `reality-opts` 加 `support-x25519mlkem768: true` |
-| 客户端延迟正常但**打开网站超时** | 可能是**本地 DNS 污染**被传给了节点 | 对比：命中 `MATCH`（走代理）的站点通、命中域名规则的站点不通 | 把本地 DNS 改成 `fake-ip` 模式，让域名交给节点侧解析 |
-| 一直连不上某节点，其他节点正常 | 分组指向不一致 | 查 mihomo 各代理组当前 `now` 是否都指向可用节点 | 逐个组切到可用节点；**重启客户端后分组选择可能回落到组内第一项** |
-| 客户端延迟测试失败但实际能用 | 测试 URL 或超时参数不合适 | 换 `url=http://www.gstatic.com/generate_204` 重测 | — |
-
----
-
-## F. 测法本身出错（最隐蔽的一类）
-
-> **这一节的教训最贵：错误的测法会给出"成功"的假象，让你得出完全相反的结论。**
-
-| 假象 | 成因 | 如何识别 | 正确做法 |
-|---|---|---|---|
-| **本机测任意 IP 端口都"OPEN"** | **TUN 模式在本地接管连接**（`connect()` 立即返回，后台才拨号）| 拿一个**不存在的 IP**（如 `1.2.3.4:443`）做对照 —— **如果它也"成功"，测法已被污染** | 先 `route -n get <目标IP>` 看接口；若是 `utun*`，改用外部 vantage 或内核自身拨号接口测 |
-| 直连一个被封锁的 IP 显示"出口 IP 正常" | 同上（流量被 TUN 接管后走了代理）| 用 `curl --noproxy '*'` 取出口 IP —— 若结果等于代理出口，说明已被接管 | 同上 |
-| 端口"通"但服务明明没起 | 上述假 OPEN | 对照组测试 | 同上 |
-| 用 `/delay` 数值与 `curl` 端到端耗时互相比较 | **两者口径不同**（delay 不含本地到代理的建连与 DNS）| 同一节点两种测法数值差很大 | 横向比较时**统一口径**；对客户端体验而言以端到端为准 |
-| **重启后没验证就宣布完成** | 内核参数/模块加载未持久化 | 重启后复查 | 关键项（BBR、服务、端口、节点）**重启后必须复核** |
-
-### 通用纪律
-
-> **给出任何结论之前，先问一句：这个测法会不会被本地接管或污染？**
-> **并且永远配一个"必定失败"的对照组。**
-
----
-
-## 附：一次性全面体检脚本
-
-```sh
-# 在服务器上执行，输出一份状态快照
-echo "=== 系统 ==="; uname -r; uptime -p
-echo "=== 内核调优 ==="; sysctl -n net.ipv4.tcp_congestion_control; sysctl -n net.core.default_qdisc
-echo "=== 待升级 ==="; apt list --upgradable 2>/dev/null | grep -c upgradable
-echo "=== 服务 ==="; for s in x-ui ssh ufw fail2ban; do printf "%s=%s " "$s" "$(systemctl is-active $s)"; done; echo
-echo "=== 监听 ==="; ss -tlnp | grep -E 'x-ui|xray|sshd'
-echo "=== 防火墙 ==="; ufw status
-echo "=== 入站 ==="; python3 -c "
-import sqlite3;db=sqlite3.connect('/etc/x-ui/x-ui.db')
-for r in db.execute('select id,remark,port,protocol,enable from inbounds'): print(' ',r)
-print(' client_inbounds:', list(db.execute('select * from client_inbounds')))
-"
-```
+不把加密 DNS、fake-IP、TUN 或固定代理等同于匿名或系统级断网锁。应用保护有版本、配置优先级和独立网络路径范围；没有完整网络层约束与验收，不能保证退出 Clash 或改直连模式时仍不泄漏。

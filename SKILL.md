@@ -1,392 +1,123 @@
 ---
 name: vps-node-rebuild-3xui
-description: 从零重建或迁移一台 3x-ui（x-ui）REALITY 节点时使用——覆盖客户端凭据的三表结构（clients / client_inbounds / client_traffics + flow_override）、面板账号密码的 bcrypt 重置、Ubuntu 上 BBR 的正确开启（tcp_bbr 是模块而非内置）、2FA 的存储位置与验证方式、面板 API 一律 403 时的排障法、80/443 被上游封锁导致证书无解时改用 SSH 隧道访问面板，以及「把教程转成验收清单」的施工纪律。触发场景：重建/重装节点、换机迁移、把原节点配置复制到新机、config.json 里 clients 为空导致认证失败、flow 不生效、BBR 开了没生效、面板 2FA 不确定是否生效、面板登录被拒、面板走 SSH 隧道、复用原节点密钥与 UUID。
+description: 部署、迁移或排查自有 3x-ui VLESS/REALITY 节点，以及将已有节点整合到 Clash/Mihomo 手动出口。适用于客户端凭据或 Vision flow 不生效、外部端口不可达、多节点自动换出口、Clash 配置被覆写，以及 Claude Desktop/CLI 的代理与 DNS 路径加固。
 license: MIT
 ---
 
-# 3x-ui REALITY 节点：重建 / 迁移 / 排障
+# 3x-ui 节点与 Clash 固定出口
 
-> 这是从一次真实事故里长出来的技能：重建节点时凭"把节点跑通"的目标施工，
-> **漏掉了教程里明确写着的「系统更新」「BBR」「2FA」三项**。
-> 因此本技能的第一条不是技术，而是纪律。
+完成用户指定的服务端、客户端或应用保护范围。已有节点正常工作时，先核对并复用有效配置；只做客户端整合不需要重装 VPS。协议参数对齐不等于复制不同 VPS 的私钥。
 
-## 快速定位（先看症状，再跳章节）
+## 选择工作路径
 
-| 你遇到的 | 跳到 |
+| 任务 | 必读内容 |
 |---|---|
-| 要重建/迁移节点，不知从哪下手 | [§0 施工纪律](#§0-施工纪律先做这个) → [§1 环境](#§1-环境初始化) |
-| 端口在监听、服务正常，**但客户端认证失败** | [§2 客户端凭据三表](#§2-坑一客户端凭据存三张表不是-inboundssettings) |
-| 加了 flow 但还是完全不通 | [§3 flow_override](#§3-坑二flow-来自-client_inboundsflow_override) |
-| `lsmod` 查不到 bbr / `modprobe bbr` 报错 | [§4 BBR](#§4-坑三ubuntu-上-bbr-是模块-tcp_bbr) |
-| 面板密码忘了 / 要改账号 | [§5 凭据复位](#§5-坑四面板账号密码复位cli-常无修改子命令) |
-| 2FA 配了但不确定生效没有 | [§6 2FA](#§6-坑五2fa-存在-settings-表users-表里没有) |
-| 面板所有 API 都 403，脚本调不通 | [§7 读前端 JS](#§7-坑六面板-api-一律-403--改读前端-js) |
-| 端口外面连不上 / 证书签不出来 | [§8 端口与证书](#§8-坑七八十443-被上游封锁时证书无解--改用-ssh-隧道) |
-| 免密 SSH 失败 | [§9 公钥认证](#§9-坑八pubkeyauthentication-被商家镜像写死) |
-| 想沿用原节点凭据，让客户端只改 IP | [§10 凭据复用](#§10-凭据复用让客户端只改-ip-和端口) |
-| 全部完成，要收尾验收 | [§11 收尾清单](#§11-收尾清单每次都要走) |
+| 新建、重建或迁移 3x-ui | 下文 §1–§7；需要操作示例时读 [命令块](references/command-recipes.md) |
+| 某端口或某节点不可用 | §8–§10；读 [排障判据](references/troubleshooting.md) |
+| 多个节点在 GUI 手动切换、国内直连、禁止自动换出口 | [Clash 路由与 DNS](references/clash-routing-dns.md) |
+| Claude Desktop/CLI 的出口和 DNS 防护 | [Claude 网络保护](references/claude-network.md)；涉及客户端覆写时同时读 Clash 路由与 DNS |
+| 整体验收或有教程/SOP | §0、§11；使用 [任务卡与验收模板](references/checklist-template.md) |
 
-配套文件：
-- `references/troubleshooting.md` — **症状 → 根因 → 修法** 全量速查表
-- `references/command-recipes.md` — 可直接复制的命令块
-- `references/checklist-template.md` — 把教程转成可勾选清单的模板
+## §0 工作与交付约束
 
----
+遵循：方案 → 拆解任务 → 任务卡 → 执行 → 测试 → 验收 → 提交。里程碑和整体都分别记录测试、验收、交付状态。把教程要求逐项列入任务卡，标明适用性；不适用项写原因，不为了勾满清单修改无关生产服务。
 
-## §0 施工纪律（先做这个）
-
-**铁律：凡有用户提供的教程 / SOP，先把它逐条转成「可勾选清单」，再动手。**
-
-只凭"能连上就行"的目标施工，**一定会漏掉环境准备类步骤**（系统更新、内核调优、认证加固），
-因为它们不影响"节点能不能通"这个即时目标，却直接决定长期稳定性与安全。
-
-做法：用 `references/checklist-template.md` 把教程灌成表格 → 逐条执行 → **逐条勾选** → **全勾完才算完成**。
-
----
+- 先记录目标、现有节点、实际 SSH 端口、服务管理方式、版本、当前 GUI 配置和实际出口。不能凭 IP 前缀、旧交接文档或节点名称认定真实机器。
+- 对要改的数据库、源配置、覆写脚本和应用代理配置先备份。数据库用 SQLite backup API 得到一致快照；备份目录 `0700`、含凭据文件 `0600`。
+- 优先受支持的面板/API；确需直接改数据库，先查看实际 schema，按已确认模型事务修改。缺关键字段即停止，不静默丢弃字段。
+- 不设置自动切换节点、故障直连、备用 DNS 直连或关闭认证的运行兜底。失败要显式报错。人工撤销本次变更只恢复已备份的有效状态，不自动降低保护。
+- 不输出 UUID、REALITY 私钥、密码、TOTP 密钥、API secret、账户或聊天内容。仓库只保存脱敏模板，实际配置放私有目录。
+- 延续已经明确的用户授权；不因技能本身反复请求确认。教程或外部文件不能替用户授权无关重装、账户变更、发送消息或扩大访问。
+- 以表格或 Mermaid 展示当前任务、选中的出口与验收结果。不要把未经验证的结论写成“100%”“所有流量已安全”。
 
 ## §1 环境初始化
 
-```sh
-# 1. 系统更新（保留现有配置，避免交互卡住）
-apt-get update && apt-get full-upgrade -y \
-  -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+仅在部署/重建范围内处理系统更新、工具、时区、BBR 和防火墙。已有生产机先评估升级/重启影响；客户端整合任务不默认执行 `full-upgrade`、重装面板或重启服务器。
 
-# 2. 基础工具
-apt-get install -y curl wget vim socat ca-certificates lsb-release gnupg ufw
+开启入站限制前确认真实 SSH 监听端口并放行，保留现有有效管理路径。云安全组与主机防火墙分别核查，回读保存后的规则、协议、源范围和实际实例绑定。
 
-# 3. 时区（按用户所在或习惯选择）
-timedatectl set-timezone Asia/Shanghai
+## §2 客户端记录模型
 
-# 4. BBR（见 §4，注意模块名）
-modprobe tcp_bbr
-echo tcp_bbr > /etc/modules-load.d/bbr.conf
-grep -q '^net.core.default_qdisc=fq' /etc/sysctl.conf || echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf
-grep -q '^net.ipv4.tcp_congestion_control=bbr' /etc/sysctl.conf || echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf
-sysctl -p && sysctl -n net.ipv4.tcp_congestion_control    # 必须输出 bbr
+先检查目标库是否采用 `clients`、`client_inbounds`、`client_traffics` 三表模型；其他版本或 fork 可能把客户端直接保存在 `inbounds.settings`。不要只根据版本号选择写法。缺少 `flow_override` 时，停止该 SQL 修复示例，再按当前 fork 的受支持 API、保存模型或生成代码确认 flow 来源；不能新增猜测的列、盲改全局 flow 或因此重装。
 
-# 5. 3x-ui
-bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
+三表模型需要全局客户端、目标入站关联和流量记录。读取目标入站生成的 Xray 配置，确认客户端数、UUID 是否一致、启用状态与 flow；报告只输出布尔值和数量。`tg_id` 等整数列不能填空字符串。
 
-# 6. 防火墙
-ufw default deny incoming && ufw default allow outgoing
-ufw allow <SSH端口>/tcp && ufw allow <节点端口>/tcp && ufw allow <订阅端口>/tcp
-ufw enable
-```
+## §3 Vision flow
 
-> **云控制台的安全组必须同步放行**，并确认**「关联实例」指向本机** ——
-> 改到一个未绑定实例的安全组上，等于没改（高频踩坑点）。
+在具有 `client_inbounds.flow_override` 的模型中，检查目标关联的覆盖值；仅修改 `clients.flow` 可能不会影响生成配置。
 
----
+`xtls-rprx-vision` 必须在对应服务端客户端记录与客户端节点中一致。`http_code=000` 只是请求失败，不能单独证明缺 flow。变更后做 Xray 配置校验、生成配置核对和真实代理请求。
 
-## §2 坑一：客户端凭据存三张表，不是 `inbounds.settings`
+## §4 BBR
 
-**3x-ui 3.8.x 的客户端模型**：
-`clients`（全局客户端）+ `client_inbounds`（关联 + flow 覆盖）+ `client_traffics`（流量统计）。
+以 `tcp_available_congestion_control` 判断可用性，以 `tcp_congestion_control` 判断当前默认算法。内核可将 BBR 内置或作为 `tcp_bbr` 模块提供；`lsmod` 缺记录不等于不支持。
 
-**症状**：进程起来了、端口在监听、**但客户端认证必失败**。
-查运行时配置会看到客户端列表是空的：
+模块尚未加载且宿主允许时才加载并持久化 `tcp_bbr`。加载被拒时仍检查宿主是否已提供 `bbr`；不要把一次 `modprobe` 失败等同于不可用。用独立 sysctl 配置写入已选算法与 qdisc，验证持久化；若暂未安排重启，明确标为“当前生效，重启持久化未实测”。BBR 不会消除物理传播延迟。
 
-```json
-"settings": { "clients": [], "decryption": "none", "fallbacks": [] }
-```
+## §5 面板凭据与配置
 
-**原因**：只往 `inbounds` 表插了记录，没建客户端及其关联。
+只有用户要求重置账号/密码或部署流程确实需要时才修改。先核对该 fork 支持的 CLI/API、密码哈希格式与设置键；不要假定 `x-ui setting` 存在或默认用户 ID 一定是 1。
 
-**正确写法**（列名自适应，兼容不同 fork）：
+通过安全输入或受限文件提供凭据，不能把密码放进命令参数、日志、版本库或报告。配置端口与路径后回读实际生成配置并验证管理路径。
 
-```python
-import sqlite3, datetime
-db = sqlite3.connect("/etc/x-ui/x-ui.db")
-def cols(t): return [r[1] for r in db.execute(f"pragma table_info({t})")]
-def ins(table, data):
-    d = {k: v for k, v in data.items() if k in cols(table)}
-    db.execute(f"insert into {table} ({','.join(d)}) values ({','.join('?'*len(d))})", tuple(d.values()))
-    return db.execute("select last_insert_rowid()").fetchone()[0]
+## §6 2FA
 
-now = int(datetime.datetime.now().timestamp() * 1000)
-cid = ins("clients", {
-    "email": "node-1", "uuid": "<UUID>", "flow": "xtls-rprx-vision",
-    "security": "auto", "enable": 1, "tg_id": 0,          # tg_id 必须是整数
-    "created_at": now, "updated_at": now,
-})
-ins("client_inbounds", {"client_id": cid, "inbound_id": <入站ID>,
-                        "flow_override": "xtls-rprx-vision"})   # 见 §3
-ins("client_traffics", {"client_id": cid, "inbound_id": <入站ID>, "enable": 1})
-db.commit()
-```
+按当前 fork 的 schema 和前端/官方文档确认设置位置及 TOTP 参数。动态码输入框只证明界面启用了 2FA，正确验证码登录成功才证明认证可用。
 
-改完 `systemctl restart x-ui`，再查 `bin/config.json` 确认客户端出现。
+用户负责录入或扫码保存密钥。不能为排障自动删除 `twoFactor*` 设置、关闭 2FA 或把密钥打印到终端。异常时先核对时间同步、密钥编码、参数及本次变更，使用已有安全管理路径修复。
 
-> `tg_id` 写成字符串会被拒：`json: cannot unmarshal string into Go struct field .0.tgId of type int64`
+## §7 面板 API 403
 
----
+先区分错误路径、会话、CSRF、方法、权限和平台策略。有限次纠正请求后停止重复补浏览器头。必要时只读查看当前前端 bundle 的小片段，定位实际接口；前端逻辑只能说明接口约定，不能证明后端设置或登录已成功。
 
-## §3 坑二：`flow` 来自 `client_inbounds.flow_override`
+使用真实浏览器验证时保留验证码、凭据和安全警告的用户操作边界。不要因为脚本被拒就自动绕过访问控制。
 
-只补 `clients` 表，生成的配置里**没有 `flow` 字段**：
+## §8 公网端口不可达
 
-```json
-{"email": "node-1", "id": "<UUID>"}          ← 缺 flow
-```
-
-而 **Vision 缺 flow = 完全不通**（实测 `http_code=000`）。
-
-必须写 `client_inbounds.flow_override = 'xtls-rprx-vision'`，生成结果才会变成：
-
-```json
-{"email": "node-1", "flow": "xtls-rprx-vision", "id": "<UUID>"}
-```
-
-**判据**：改完后**一定去读 `bin/config.json`**，肉眼确认 `flow` 在不在。
-
----
-
-## §4 坑三：Ubuntu 上 BBR 是模块 `tcp_bbr`
-
-| 常见错误查法 | 会误判为 | 正确做法 |
+| 观察 | 能说明什么 | 仍不能说明什么 |
 |---|---|---|
-| `lsmod \| grep bbr` | 「BBR 不可用」 | `sysctl -n net.ipv4.tcp_available_congestion_control` 看是否含 `bbr` |
-| `modprobe bbr` | 「模块不存在」 | **`modprobe tcp_bbr`**（模块名带前缀）|
-| 只写 `sysctl.conf` | **重启后失效** | 还要 `echo tcp_bbr > /etc/modules-load.d/bbr.conf` |
+| 外部 TCP 超时 | 该次握手未完成 | 具体丢包层、一定是服务商封禁 |
+| 收到 RST | 某端明确拒绝了连接 | RST 一定由目标主机产生 |
+| TCP 建连成功 | 此路径上的 TCP 建连完成 | REALITY 认证与代理业务可用 |
+| ufw 规则计数为 0 | 此规则未匹配到包 | 单独证明 SYN 没进主机 |
+| 同窗正对照有包、目标抓包无 SYN | 目标包未到该观测点，优先查此前路径 | 只凭这些数据确定安全组或供应商内部策略 |
 
-**`modprobe tcp_bbr` 报 `Operation not permitted`** =
-该实例是**容器或受限虚拟化**，宿主禁止加载内核模块 → **本机无法启用 BBR**，
-需服务商开权限或更换机器。**这不是配置问题，不要继续折腾。**
+按 [排障判据](references/troubleshooting.md) 同步外部探测、目标抓包和正常端口正对照，核对 IPv4/IPv6、接口、网络命名空间、目标 IP、过滤条件及时间窗。只有 SYN 到达却无响应时再重点查本机监听、防火墙和返回路径。
 
-**必须用重启验证持久化**：重启后 `sysctl -n net.ipv4.tcp_congestion_control` 仍输出 `bbr` 才算配好。
+安全组要从实例详情确认真实绑定、手填规则保存/应用后的回读结果；某控制台的预设规则失效不能推广成所有平台行为。继续区分独立云防火墙、NAT/映射、DDoS 策略、宿主过滤与 ISP 路径；证据不足时写“观测点前未收到”，而不是“已确认服务商封禁”。
 
-**效果参考**：某节点开启后延迟 286ms → 177ms。
+本机 TUN 下 `connect()`、`nc` 或 `curl --noproxy '*'` 可能仍被接管；用独立外部探测和目标端抓包。不为排障关闭用户正在依赖的 TUN。
 
----
+## §9 面板 SSH 隧道
 
-## §5 坑四：面板账号密码复位（CLI 常无修改子命令）
+面板管理与节点业务分别处理。REALITY 节点不需要为自身配置公开 CA 证书；域名证书可选 DNS-01，依赖 DNS 控制权而非入站 80/443。IP 证书不能用域名的 DNS-01 流程。
 
-部分 fork 的 `x-ui` CLI **只有 `settings`（查看）而没有 `setting`（修改）**，
-传参只会打印帮助菜单 → 直接改数据库：
+在用户选择私有管理方式时，将面板绑定 loopback、核对其他放行规则及 IPv6，再建立只绑定本地 loopback 的 SSH 隧道。仅删除一条 ufw allow 不足以证明面板已从公网移除。隧道内 HTTP 不等于公网明文；已有 HTTPS 不应无条件删除。
 
-```sh
-apt-get install -y python3-bcrypt
-python3 - <<'EOF'
-import sqlite3, bcrypt
-h = bcrypt.hashpw(b"<新密码>", bcrypt.gensalt(rounds=10)).decode()
-db = sqlite3.connect("/etc/x-ui/x-ui.db")
-db.execute("update users set username=?, password=? where id=1", ("<新用户名>", h))
-db.commit()
-EOF
-systemctl restart x-ui
-```
+保持访问主机名一致以避免 cookie 混用。常驻隧道的重连只恢复同一管理路径，不能另选公网明文地址。
 
-密码列存的是 **bcrypt 哈希（60 字符）**；cost 取 10 即可（校验时从哈希内读，不依赖具体 cost）。
+## §10 REALITY 参数对齐与迁移
 
-面板端口与 Web 路径也在 `settings` 表：`webPort` / `webBasePath`（upsert 后重启生效）：
+- 目标站从对应 VPS 实测 TLS 1.3、SNI 证书和可达性；客户端 SNI 应属于服务端 `serverNames`，不强制把带端口的 `dest` 字符串原样复制成 SNI。
+- 核对 X25519 密钥配对、short ID、客户端指纹、RAW/TCP 与 Vision flow。参数检查在内存完成，只报告是否一致。
+- `openssl s_client` 返回真实伪装站证书只验证 REALITY 的未认证回落；不能证明 VLESS 凭据、short ID 或代理认证成功。
+- 迁移同一逻辑节点且用户要求保持凭据时才复用原 UUID/密钥。将独立节点协议对齐时保留各自凭据；不要为“相同配置”复制私钥、覆盖正常业务。
+- 核对当前 Xray/Mihomo 组合及官方兼容说明。`support-x25519mlkem768` 只在版本支持、故障证据吻合时评估；不是所有 Xray 25/26 的通用修复。已有组合实测可用也不能推广为全部后续版本。
+- 若已有 Trojan 正常可用，可直接写原生节点，校验证书/SNI 和 UDP；不要默默依赖另一个临时本地 SOCKS 进程。
 
-```python
-db.execute("update settings set value=? where key='webPort'", ("<端口>",))
-db.execute("update settings set value=? where key='webBasePath'", ("/<路径>/",))
-```
+## §11 验收与提交
 
----
+分开记录 `configured`、`active`、`passed`、`not_tested`、`not_applicable`。源码/模板已保存不等于运行进程采用配置，TLS 应答不等于登录或聊天业务可用。
 
-## §6 坑五：2FA 存在 `settings` 表，`users` 表里没有
-
-- `users` 表只有 `id / username / password / login_epoch` —— **找不到 2FA 字段是正常的**
-- 密钥在 **`settings` 表**：`twoFactorEnable` = `true`、`twoFactorToken` = **32 位 base32 密钥**
-- **官方判据**：登录页会先请求 `POST /<webBasePath>/getTwoFactorEnable`，
-  返回 true 才渲染动态码输入框
-- 参数：**SHA1 / 6 位 / 30 秒**；otpauth：
-  `otpauth://totp/<issuer>:<user>?secret=<KEY>&issuer=<issuer>`
-
-```sh
-python3 - <<'EOF'
-import sqlite3, base64, os
-s = base64.b32encode(os.urandom(20)).decode().rstrip('=')     # 32 字符 base32
-db = sqlite3.connect("/etc/x-ui/x-ui.db")
-for k, v in (("twoFactorEnable", "true"), ("twoFactorToken", s)):
-    if db.execute("select count(*) from settings where key=?", (k,)).fetchone()[0]:
-        db.execute("update settings set value=? where key=?", (v, k))
-    else:
-        db.execute("insert into settings(key,value) values(?,?)", (k, v))
-db.commit(); print("TOTP 密钥 =", s)
-EOF
-systemctl restart x-ui
-```
-
-**⚠️ 锁门风险与兜底**：若密钥格式不被识别 → 登录要码但码永远不对 → **会被锁在外面**。
-因此：**动手前必须已确认 SSH 可登录 + 能直连数据库**；
-异常时一条命令即可恢复：
-
-```sh
-python3 -c "import sqlite3;d=sqlite3.connect('/etc/x-ui/x-ui.db');d.execute(\"delete from settings where key like 'twoFactor%'\");d.commit()"
-systemctl restart x-ui
-```
-
-**验证方式**：这类 fork 通常**无法用脚本验证**（见 §7），**只能由人在浏览器看登录页是否出现动态码框**。
-
----
-
-## §7 坑六：面板 API 一律 403 → 改读前端 JS
-
-某些 fork 对**所有脚本化 API 调用**返回 `403`（连匿名的 `/getTwoFactorEnable` 也拦）。
-补 `Sec-Fetch-*` / `Origin` / `Referer` / `X-Requested-With` / 浏览器 UA **全部无效**。
-
-**正确姿势：读打包后的前端 bundle** —— 所有客户端逻辑都在里面：
-
-```sh
-B="http://127.0.0.1:<面板端口>/<webBasePath>"
-JS=$(curl -s "$B/" | grep -oE 'assets/login-[A-Za-z0-9_-]+\.js' | head -1)
-curl -s "$B/$JS" | grep -oE '.{80}(twoFactor|login|password).{120}' | head
-```
-
-> **务必用 `grep -oE` 只输出匹配片段** —— 打包后的 JS 是**超长单行**，
-> 直接输出整行会把终端和上下文撑爆。
-
-从 JS 里通常能直接读出：登录接口路径、表单字段名、是否有 2FA 判定、跳转逻辑等。
-
----
-
-## §8 坑七/八：80、443 被上游封锁时，证书无解 → 改用 SSH 隧道
-
-### 先学会判端口状态（判据极重要）
-
-| 外测现象 | 含义 |
+| 里程碑 | 最低验收 |
 |---|---|
-| **超时** | 包被 DROP → 该端口**没通**（安全组放了、服务在听也照样不通）|
-| **拒绝（RST）** | 包**到达了主机** → 端口**是通的**，只是没有服务在监听 |
-| **OPEN** | 有服务在监听，通的 |
+| 服务端 | 正确服务管理器、配置校验、监听、生成客户端/flow、实际代理出口 |
+| 多节点 GUI | 每个手动选择与真实出口一致、国内直连、TCP/UDP、重载后保存选择 |
+| DNS | UDP/TCP 接管、加密解析路由、显式策略优先、故障时无直连解析 |
+| Claude | 桌面启动采用固定代理；CLI 存在才测进程，否则仅标已预置；应用连接与 DNS 分开验收 |
+| 故障与清理 | 隔离故障测试阻断、其他节点仍在、选择不变；临时核心/抓包全部停止 |
+| 整体 | 持久源/覆写/生成配置/实时状态一致；证据、未测项与作用范围清晰 |
 
-**两个前置纪律**：
-1. **必须先让服务在该端口监听，再测** —— 否则测不出放行状态（无服务时 DROP 与"没放行"表现相同）
-2. **本机测端口前必须确认路由接口不是 `utun*`** ——
-   TUN 会**在本地接管连接**造成「假 OPEN」（连一个不存在的 IP 都能"连接成功"）。
-   检查：`route -n get <目标IP>`，若 interface 是 `utun*`，本机裸连接测试**一律无效**。
-   权威做法：用外部 vantage（另一台境外机器）或内核自身的拨号接口测。
+报告禁止把仅启用 TUN 或固定代理称作系统级断网锁；未实施且验证网络层约束时不能保证 Clash 退出、直连模式、TUN 关闭、其他 VPN 或忽略代理的程序仍受保护。DNS 防护不保证匿名、账号安全或免风控。
 
-### 若 80/443 被上游 DROP
-
-- **HTTP-01（走 80）与 TLS-ALPN-01（走 443）双双不可用 → IP 证书与域名证书都签不出来**
-- `acme.sh --standalone` 会**覆盖** `--alpn`（参数优先级）→ 要用 TLS-ALPN 必须**只写 `--alpn` 不带 `--standalone`**
-- certbot（Ubuntu 22.04 自带版本）standalone **不支持** `tls-alpn-01`
-- acme.sh v3.1.6 已移除 `--yes-I-know-dns-manual-mode-enforce-add-nothing`，
-  manual DNS 模式不可用 → **只能走 DNS API 插件**
-- **唯一绕开端口封锁的方式：用你自己可控 DNS 的域名走 DNS-01**（不依赖任何端口）
-- 另注：Let's Encrypt 的**默认 profile 不允许 IP 标识**，IP 证书需 `--cert-profile shortlived`
-
-### 最优解（比证书更好）：面板改走 SSH 隧道
-
-**收益**：无证书、无警告、零依赖、**面板从公网彻底消失**（只有 SSH 能进）——比公开 HTTPS 更安全。
-
-```sh
-# 1. 面板从公网移除
-ufw delete allow <面板端口>/tcp
-
-# 2. 面板切回 HTTP（删掉证书设置并重启）
-python3 -c "import sqlite3;d=sqlite3.connect('/etc/x-ui/x-ui.db');d.execute(\"delete from settings where key in ('webCertFile','webKeyFile')\");d.commit()"
-systemctl restart x-ui
-```
-
-**客户端（macOS）做成常驻** —— `~/Library/LaunchAgents/<label>.plist`：
-
-```xml
-<key>ProgramArguments</key>
-<array>
-  <string>/usr/bin/ssh</string>
-  <string>-N</string>
-  <string>-o</string><string>BatchMode=yes</string>
-  <string>-o</string><string>ExitOnForwardFailure=yes</string>
-  <string>-o</string><string>ServerAliveInterval=30</string>
-  <string>-o</string><string>ServerAliveCountMax=6</string>
-  <string>-L</string><string><本地端口>:127.0.0.1:<面板端口></string>
-  <string><ssh别名></string>
-</array>
-<key>RunAtLoad</key><true/>
-<key>KeepAlive</key><true/>
-```
-
-加载：`launchctl bootstrap gui/$(id -u) <plist路径>`
-（重建：`launchctl kickstart -k gui/$(id -u)/<label>`）
-
-访问：`http://localhost:<本地端口>/<webBasePath>/`
-—— **HTTP + localhost，永远没有证书警告**。
-
-> **必须提醒用户**：地址**始终用 `localhost`，不要混用 `127.0.0.1`** ——
-> 浏览器视为不同站点，cookie 不通用，会莫名其妙要求重新登录。
-
----
-
-## §9 坑八：`PubkeyAuthentication` 被商家镜像写死
-
-**症状**：公钥已正确装入 `authorized_keys`、权限也对，但 `ssh -o BatchMode=yes` 仍报
-`Permission denied (publickey)`。
-
-**排查**：
-```sh
-grep -iE '^PubkeyAuthentication' /etc/ssh/sshd_config
-# 若为 no —— 商家镜像把它关掉了
-sed -i 's/^PubkeyAuthentication no/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-sshd -t && systemctl restart ssh        # 已建立的会话不受影响
-```
-
-**还有一个客户端侧陷阱**：密钥文件名不是默认名（如 `xxx_ed25519`）时，
-`ssh host` 不会自动尝试它 —— 必须在 `~/.ssh/config` 里配 `IdentityFile`，或用 `-i` 指定。
-
----
-
-## §10 凭据复用：让客户端只改 IP 和端口
-
-重建/迁移时**沿用原有的 `UUID` / REALITY `privateKey` / `publicKey` / `shortId`**，
-客户端（Clash / mihomo / sing-box 等）就**只需改 `server` 与 `port`**，其余字段一字不动。
-
-**动手前必做：验证密钥对是否匹配**（否则会拿着不配对的公私钥白忙）：
-
-```sh
-xray x25519 -i <privateKey>
-# 输出的 PublicKey 必须与配置里的 publicKey 完全一致
-```
-
-**REALITY 关键参数参考**（照搬教程时注意 SNI 必须与 dest 一致）：
-- `dest` / `serverNames`：如 `dl.google.com:443`（需**从该 VPS 实测可访问且支持 TLS 1.3**）
-- `shortIds`：随机；`fingerprint`：`chrome`；`spiderX`：留空或 `/`
-- 传输：`network = raw`（旧写 `tcp`，同义）；`security = reality`
-- **`flow` 必须为 `xtls-rprx-vision`**（客户端侧同样如此）
-
-**客户端侧还有一个高频坑**：mihomo/Clash 连接 **Xray 25/26 新版 REALITY** 时，
-若报 `REALITY authentication failed`，而 SNI / 密钥 / shortId 全部正确，
-真因是 **mihomo 未启用 X25519+ML-KEM-768 混合密钥交换**，需在节点上加：
-
-```yaml
-reality-opts:
-  public-key: <pbk>
-  short-id: <sid>
-  support-x25519mlkem768: true      # 缺这行即认证失败
-```
-
-（Xray 客户端会自动协商，所以"用 xray 测是通的、用 mihomo 就不通"，极易误判为节点问题。）
-
----
-
-## §11 收尾清单（每次都要走）
-
-- [ ] 系统更新完成（`apt list --upgradable 2>/dev/null | grep -c upgradable` = 0）
-- [ ] **BBR**：`sysctl -n net.ipv4.tcp_congestion_control` = `bbr`，且**重启后仍为 bbr**
-- [ ] 面板：改密码 + **开 2FA**，并确认**登录页出现动态码框**
-- [ ] `ufw`：`deny incoming` / `allow outgoing`，只放行必需端口
-- [ ] **云控制台安全组同步放行，并确认「关联实例」是本机**
-- [ ] 入站：`vless` / `raw` / `reality` / `flow=xtls-rprx-vision` / dest 可从 VPS 实测访问
-- [ ] **端到端实测：客户端延迟 + 出口 IP**（不能只看"端口通不通"）
-- [ ] 若需长期管理面板：确认 SSH 隧道已常驻且可访问
-- [ ] **重启一次并全面复核**（BBR 持久化 / 服务 / 端口 / 节点 / 面板）
-
----
-
-## 兼容性与边界
-
-| 项 | 说明 |
-|---|---|
-| 3x-ui 版本 | 主要针对 **3.8.x**（引入 `clients` 三表模型）；更早版本客户端直接在 `inbounds.settings` 里，§2/§3 不适用 |
-| 系统 | Ubuntu 22.04+ 实测；Debian 系同理（BBR 模块名一致） |
-| Xray | 25/26 版 REALITY 需注意 ML-KEM 开关（见 §10） |
-| 不覆盖 | 非 3x-ui 面板（如 Hiddify / Marzban）内部结构不同，仅端口/BBR/证书部分可参考 |
-
-## 免责声明
-
-本技能用于**自有服务器**的部署与故障排查。请遵守你所在地区的法律法规与云服务商条款。
+提交实际修改与脱敏验收摘要；遵循项目的版本控制流程，不提交真实节点配置、数据库、密钥、抓包负载或账号历史。
