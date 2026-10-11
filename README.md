@@ -12,6 +12,7 @@
 | 外部端口或节点间歇失败 | 原配置新请求、双端同窗抓包与正对照；区分入站/返回异常，有限实验，恢复后停止改动并验收，不凭超时归责服务商 |
 | 多个节点整合进 Clash | 国内直连、国外跟随一个 GUI 手动选择；选中节点故障时阻断，不自动切换或直连 |
 | Claude Desktop/CLI | 固定 HTTP 代理与显式加密 DNS 策略；分别验证配置、进程采用和网络路径 |
+| Mac DNS / WebRTC / Safari | 系统 DNS 接入本地 Clash、浏览器限制、可选 UID 级 PF 防绕行；真实浏览器和物理网卡探针分别验收 |
 | 教程施工与交付 | 方案 → 任务卡 → 执行 → 测试 → 验收 → 提交；保留未测项与范围 |
 
 ## 结构
@@ -24,6 +25,10 @@ references/
   checklist-template.md              任务卡、里程碑、整体验收
   clash-routing-dns.md               单一出口、DNS、覆写、隔离故障测试
   claude-network.md                  Desktop/CLI 固定代理与保护边界
+  macos-leak-guard.md                DNS、Chrome/Safari、PF、持久化和边界
+assets/
+  macos-leak-guard.pf.in             需替换 UID/TUN 的可选 PF 模板
+  webrtc-probe.html                 不上传地址候选的本地浏览器探针
 ```
 
 ## 使用
@@ -43,11 +48,15 @@ git clone https://github.com/qixian771-spec/vps-node-rebuild-3xui.git \
 使用 vps-node-rebuild-3xui，核对现有节点，把它们放入 Clash 的一个手动选择组。
 国内直连，国外跟随我选择的节点，节点故障时连接失败，不自动换出口或直连。
 同时核对 Claude Desktop 和 CLI 的代理与 DNS 路径，并给出实测结果和未测项。
+在 Mac 上同时完成 DNS 和 WebRTC 防泄露，覆盖默认浏览器 Safari 与 Chrome。
+需要系统防绕行时先核对实际用户、核心身份、TUN 和现有防火墙，保留国内直连。
 ```
 
 ## 版本与边界
 
 经验包含 3x-ui 三表客户端模型，以及 2026-09-30 对 Mihomo 1.19.29、Clash Verge 2.5.2、Claude Desktop 2.16120.0 的实测。不是对全部 fork 或未来版本的兼容承诺；执行前核对当前 schema、官方文档和运行配置。
+
+2026-10-11 补充 Mac DNS/PF 和 Safari 26.5.2、Chrome 154 的经验。Safari 隐藏 WebRTC 开关曾被应用恢复，不能据写入成功判定有效；最终采用并验证系统层防绕行。PF 模板需要按目标主机生成，不把案例 UID、TUN 名称或出口 IP 固化成部署参数。
 
 `SKILL.md` 的 Frontmatter 不绑定用户节点、IP、账号或密钥。所有示例只提供配置结构，不能直接用于生产。不要将真实配置、数据库、凭据或聊天内容提交到本仓库。
 

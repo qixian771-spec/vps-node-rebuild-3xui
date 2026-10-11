@@ -1,0 +1,11 @@
+# Optional current-user guard. Read references/macos-leak-guard.md first.
+# Replace both tokens from current host evidence; never load this template as-is.
+# Requires an independently owned proxy core (reference case: root service).
+table <leak_guard_local> const { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255, ::1, fc00::/7, fe80::/10, ff00::/8 }
+pass out quick on lo0 no state label "leak-guard-local"
+pass out quick on REPLACE_TUN_INTERFACE no state label "leak-guard-tun"
+block drop out quick proto { tcp udp } to any port { 53, 853 } label "leak-guard-dns"
+# Common STUN/TURN ports only, not a protocol-complete WebRTC prohibition.
+block drop out quick proto { tcp udp } to any port { 3478, 5349, 19302 } label "leak-guard-stun"
+# Broad scope: all new public TCP/UDP connections owned by this UID.
+block drop out quick proto { tcp udp } from any to ! <leak_guard_local> user REPLACE_UID label "leak-guard-user-public"

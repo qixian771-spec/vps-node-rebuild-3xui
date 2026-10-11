@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>本地 WebRTC 候选检查</title>
+<style>
+body{font:17px system-ui;max-width:850px;margin:40px auto;padding:24px;background:#f4f7fb;color:#182b40}
+button{font:inherit;padding:10px 20px}pre{white-space:pre-wrap;background:white;padding:20px;border-radius:12px}
+</style>
+<h1>本地 WebRTC 候选检查</h1>
+<p>点击后分别测试 Google 与 Cloudflare STUN，各观察最多 7 秒。不请求摄像头或麦克风，不上传结果；STUN 服务仍会收到测试连接。</p>
+<button id="start">开始检查</button>
+<pre id="result">尚未测试</pre>
+<p>匿名 mDNS 候选不等于公网 IP 泄露。无候选、API 不可用或观察超时都不能单独证明没有泄露；请结合 DNS 路径与物理接口防火墙计数。</p>
+<script>
+async function collect(url, duration = 7000) {
+  const result = {server:url, status:'inconclusive', gathering_complete:false,
+    candidates:0, mdns:0, literal_ipv4:0, literal_ipv6:0, srflx:0, relay:0};
+  if (typeof RTCPeerConnection !== 'function') return {...result,status:'api-unavailable'};
+  let pc, timer, finish;
+  const deadline = new Promise(resolve => { finish=resolve; timer=setTimeout(resolve,duration); });
+  try {
+    pc = new RTCPeerConnection({iceServers:[{urls:url}]});
+    pc.onicecandidate = event => {
+      if (!event.candidate) return;
+      const c=event.candidate;
+      const address=c.address || c.candidate.split(' ')[4] || '';
+      const type=c.type || c.candidate.split(' typ ')[1]?.split(' ')[0];
+      result.candidates++;
+      if (address.endsWith('.local')) result.mdns++;
+      else if (/^\d+\.\d+\.\d+\.\d+$/.test(address)) result.literal_ipv4++;
+      else if (address.includes(':')) result.literal_ipv6++;
+      if (type==='srflx') result.srflx++;
+      if (type==='relay') result.relay++;
+    };
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState==='complete') { result.gathering_complete=true; finish(); }
+    };
+    pc.createDataChannel('local-audit');
+    const negotiation=pc.createOffer().then(offer=>pc.setLocalDescription(offer));
+    await Promise.race([negotiation,deadline]);
+    await deadline;
+    result.status=result.gathering_complete?'gathering-complete':'inconclusive';
+  } catch (error) {
+    result.status='error'; result.error=error.name;
+  } finally {
+    clearTimeout(timer);
+    if (pc) { pc.onicecandidate=null; pc.onicegatheringstatechange=null; pc.close(); }
+  }
+  return result;
+}
+document.querySelector('#start').onclick=async()=>{
+  const button=document.querySelector('#start'), output=document.querySelector('#result');
+  button.disabled=true; output.textContent='正在检查…';
+  try {
+    const result={started_utc:new Date().toISOString(),tests:[]};
+    for (const url of ['stun:stun.l.google.com:19302','stun:stun.cloudflare.com:3478']) result.tests.push(await collect(url));
+    result.completed_utc=new Date().toISOString();
+    output.textContent=JSON.stringify(result,null,2);
+  } finally { button.disabled=false; }
+};
+</script>
+</html>

@@ -1,6 +1,6 @@
 ---
 name: vps-node-rebuild-3xui
-description: 部署、迁移或排查自有 3x-ui VLESS/REALITY 节点，以及将已有节点整合到 Clash/Mihomo 手动出口。适用于客户端凭据或 Vision flow 不生效、外部端口不可达、多节点自动换出口、Clash 配置被覆写，以及 Claude Desktop/CLI 的代理与 DNS 路径加固。
+description: 部署、迁移或排查自有 3x-ui VLESS/REALITY 节点，将已有节点整合到 Clash/Mihomo 手动出口，或加固 macOS DNS、Chrome/Safari WebRTC 与 Claude Desktop/CLI 网络路径。适用于节点不可用、配置被覆写、自动换出口和直连绕行排查。
 license: MIT
 ---
 
@@ -16,6 +16,7 @@ license: MIT
 | 某端口或某节点不可用 | §8–§10；读 [排障判据](references/troubleshooting.md) |
 | 多个节点在 GUI 手动切换、国内直连、禁止自动换出口 | [Clash 路由与 DNS](references/clash-routing-dns.md) |
 | Claude Desktop/CLI 的出口和 DNS 防护 | [Claude 网络保护](references/claude-network.md)；涉及客户端覆写时同时读 Clash 路由与 DNS |
+| Mac DNS/WebRTC 防泄露，包含默认浏览器 Safari | [Mac DNS 与 WebRTC 防泄露](references/macos-leak-guard.md)；先按 Clash 路由与 DNS 固定业务和解析出口 |
 | 整体验收或有教程/SOP | §0、§11；使用 [任务卡与验收模板](references/checklist-template.md) |
 
 ## §0 工作与交付约束
@@ -119,6 +120,7 @@ license: MIT
 | 服务端 | 正确服务管理器、配置校验、监听、生成客户端/flow、实际代理出口 |
 | 多节点 GUI | 每个手动选择与真实出口一致、国内直连、TCP/UDP、重载后保存选择 |
 | DNS | UDP/TCP 接管、加密解析路由、显式策略优先、故障时无直连解析 |
+| Mac 浏览器与防绕行（若请求） | 默认浏览器实测、WebRTC 候选分类、系统 DNS、物理网卡绕行探针与 PF 计数；UID/核心身份、旧状态和开机保护分别记录 |
 | Claude | 桌面启动采用固定代理；CLI 存在才测进程，否则仅标已预置；应用连接与 DNS 分开验收 |
 | 故障与清理 | 隔离故障测试阻断、其他节点仍在、选择不变；临时核心/抓包全部停止 |
 | 整体 | 持久源/覆写/生成配置/实时状态一致；证据、未测项与作用范围清晰 |

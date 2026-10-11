@@ -85,7 +85,7 @@ dns:
   fake-ip-range: 198.18.0.1/16
   fake-ip-filter: [geosite:cn, geosite:private, '+.lan', '+.local']
   respect-rules: false
-  default-nameserver: [223.5.5.5]
+  default-nameserver: ['https://223.5.5.5/dns-query#DIRECT']
   nameserver: ['https://1.1.1.1/dns-query#出口选择']
   proxy-server-nameserver: ['https://223.5.5.5/dns-query#DIRECT']
   direct-nameserver: ['https://223.5.5.5/dns-query#DIRECT']
@@ -133,6 +133,8 @@ rules:
 ## 4. TUN、IPv6 与嗅探边界
 
 TUN 要分别接管 UDP 53 和 TCP 53，不能只测 UDP DNS。macOS 对发往 LAN DNS 地址的自动劫持有平台限制；检查 `scutil --dns`、实际 UDP/TCP 请求和路由，而不是看到 `dns-hijack` 就宣布系统 DNS 全覆盖。必要时按用户授权调整系统 DNS 与路由，并验证 Clash 启停行为。[官方 TUN 说明](https://wiki.metacubex.one/config/inbound/tun/)。
+
+需要本地 DNS 入口、Chrome/Safari WebRTC 或系统防绕行时，继续读 [Mac 防泄露](macos-leak-guard.md)。其中的 UID 级防火墙影响该用户的其他应用，不能因普通 VPS 部署而自动启用；`127.0.0.1:1053` 也不能直接作为不支持端口的系统 DNS 地址。
 
 `ipv6: false` / `dns.ipv6: false` 不等于操作系统没有公网 IPv6 出口。检查实际全局 IPv6 地址、默认路由以及原生 IPv6 HTTPS 行为；有可用 IPv6 时，验证它经当前节点或明确失败。没有可用 IPv6 环境时，标记未覆盖，而不是宣称未来 IPv6 不会泄漏。
 
