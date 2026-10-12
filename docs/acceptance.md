@@ -10,7 +10,7 @@
 | M2/C1 编排 | 入口从133行缩为40行；runbook G0–G5、R0–R6；operations O0–O9；server S0–S6；安装和完整任务卡 | walkthrough通过，范围见下表 | 实现提交中的文档 |
 | M2/C2 工具 | 六个真实CLI子命令；明确0/2/3/4/5/6退出码；WebRTC超时生命周期修复 | code_test通过 | 实现提交中的scripts/assets |
 | M3/C3 测试与包 | Python19项、JS7项；22文件manifest及引用闭包；源码及安装后验证 | passed，非生产验收 | tests/与CI工作流 |
-| M4/C4 交付 | diff检查、语义/范围复核、隐私检查、官方依据复核、已授权GitHub推送 | 本地通过；远端按本次SHA核对，结果见交付消息/提交检查 | 实现提交与后续CI证据提交 |
+| M4/C4 交付 | diff检查、语义/范围复核、隐私检查、官方依据复核、已授权GitHub推送 | 本地通过；实现提交远端SHA一致，四组CI全部success（见下方固定链接） | 实现提交与后续CI证据提交 |
 | 整体 | 七路线均有进入/前提/动作/通过/停止/测试/交付；已测与未执行分开 | 本次“技能交付”范围通过；不宣称生产部署通过 | Git历史和精确SHA的Actions记录 |
 
 ## 发现问题与处理
@@ -90,3 +90,18 @@ JS测试实际覆盖：API不可用、构造失败、候选分类/不返回原�
 已授权同步仓库：[qixian771-spec/vps-node-rebuild-3xui](https://github.com/qixian771-spec/vps-node-rebuild-3xui)。工作流 [Skill delivery validation](https://github.com/qixian771-spec/vps-node-rebuild-3xui/actions/workflows/validate.yml)。最终交付应核对实际提交SHA的运行，禁止拿其他提交的绿色状态代替。
 
 提交前审阅公开文件：无真实节点配置/凭据、私人路径清单、原始日志、数据库/抓包或用户备份。快照/日志测试使用合成数据，隔离目录已按测试生命周期清理。证据记录只保留命令形式、退出码与脱敏结果。
+
+
+### 已核对的提交与 CI 证据
+
+- 实现提交：[10c9724c93e16d197303077d9eee1b98e105e168](https://github.com/qixian771-spec/vps-node-rebuild-3xui/commit/10c9724c93e16d197303077d9eee1b98e105e168)。推送后通过 `git ls-remote origin refs/heads/main` 回读，与本地SHA一致。
+- 对应运行：[38314339485](https://github.com/qixian771-spec/vps-node-rebuild-3xui/actions/runs/38314339485)。`headSha` 精确等于上述提交，`status=completed`、`conclusion=success`。
+
+| CI 环境 | 结果 |
+|---|---|
+| ubuntu-latest / Python3.10 / Node18 | success |
+| ubuntu-latest / Python3.13 / Node18 | success |
+| macos-latest / Python3.10 / Node18 | success |
+| macos-latest / Python3.13 / Node18 | success |
+
+这四组验证包结构、Python行为测试、JS合成测试和diff格式；不连接VPS、不加载PF、不运行真实Claude会话。记录CI结果的后续文档提交会再触发同一工作流，其本身状态以该提交的Checks为准；上表不是后续提交的替代证据。
