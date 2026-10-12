@@ -26,3 +26,7 @@ private/
 *.log
 *.tmp
 /tmp/
+__pycache__/
+*.pyc
+/dist/
+/coverage/

@@ -1,71 +1,63 @@
 # vps-node-rebuild-3xui
 
-面向 AI 执行者的 3x-ui REALITY 部署、迁移、排障与 Clash 手动出口技能。适用于自有服务器和已授权的客户端配置。
+供 AI 在没有历史聊天的情况下使用的执行技能：自有 3x-ui 节点部署/迁移/诊断、Clash 手动固定出口，以及按授权实施的 macOS DNS、浏览器和 Claude 网络保护。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+**这是有门槛的执行手册与离线辅助工具，不是跨版本一键部署器。** 住宅代理账户不能当作 SSH 权限；源码/合成测试通过不代表真实 VPS、浏览器或应用已通过。
 
-## 能完成的任务
+## 从哪里开始
 
-| 场景 | 方法与验收 |
+| 需要 | 入口 |
 |---|---|
-| 3x-ui 重建/迁移 | 检查真实数据库模型、Vision flow、密钥配对、服务管理与实际代理出口 |
-| 外部端口或节点间歇失败 | 原配置新请求、双端同窗抓包与正对照；区分入站/返回异常，有限实验，恢复后停止改动并验收，不凭超时归责服务商 |
-| 多个节点整合进 Clash | 国内直连、国外跟随一个 GUI 手动选择；选中节点故障时阻断，不自动切换或直连 |
-| Claude Desktop/CLI | 固定 HTTP 代理与显式加密 DNS 策略；分别验证配置、进程采用和网络路径 |
-| Mac DNS / WebRTC / Safari | 系统解析接入受保护的 Clash 路径、浏览器限制、可选 UID 级 PF；重启后的 DNS 覆写、UDP/TCP 监听和物理接口阻断分别验收 |
-| 教程施工与交付 | 方案 → 任务卡 → 执行 → 测试 → 验收 → 提交；保留未测项与范围 |
+| 首次或离线安装、已有安装更新 | [安装与首次使用](references/installation.md) |
+| 让 AI 接收任务并选路 | [SKILL.md](SKILL.md) → [执行手册](references/runbook.md) |
+| 参数、完整命令、退出码与版本适配卡 | [操作契约](references/operations.md) |
+| 本次任务卡与分层证据 | [模板](references/checklist-template.md) |
+| 本次交付的问题/任务卡/结果 | [审查与方案](docs/delivery-plan.md)、[验收记录](docs/acceptance.md) |
 
-## 结构
+## 能力与实现边界
 
-```text
-SKILL.md                             入口、工作路径与关键约束
-references/
-  command-recipes.md                 按任务选择的操作示例
-  troubleshooting.md                 症状、证据与下一步
-  checklist-template.md              任务卡、里程碑、整体验收
-  clash-routing-dns.md               单一出口、DNS、覆写、隔离故障测试
-  claude-network.md                  Desktop/CLI 固定代理与保护边界
-  macos-leak-guard.md                DNS、Chrome/Safari、PF、持久化和边界
-assets/
-  macos-leak-guard.pf.in             需替换 UID/TUN 的可选 PF 模板
-  webrtc-probe.html                 不上传地址候选的本地浏览器探针
-```
+| 路线 | 实际实现 |
+|---|---|
+| R0 只读 | 环境/版本/配置/出口证据；检测不授予修改权限 |
+| R1 服务端 | 版本适配、面板/受支持API操作手册；SQLite一致快照工具；无自动安装/直接SQL修复 |
+| R2 排障 | 原基线、协议阶段、同窗对照、一次有界实验和停止条件 |
+| R3 客户端 | 持久源/覆写/生成/运行一致性、手动出口、无自动换节点或直连DNS兜底 |
+| R4 应用 | Claude固定代理的版本/路径确认与单日志证据工具；不发送Chat |
+| R5 Mac防护 | DNS/浏览器分层流程、PF仅生成、本地WebRTC探针；不含PF自动加载器 |
+| R6 重启 | 只覆盖获授权层级，保持selector；整机与GUI重启分开 |
 
-## 使用
+国内 DIRECT 仅在用户选择时保留。失败显式停止依赖步骤；不自动重试、回滚、换来源/实现或降级验证。临时进程按任务卡预定方式清理。
 
-把整个目录放入工具支持的技能目录；路径以该工具的官方配置为准。例如 Codex 的用户技能目录：
+## 快速安装验证
+
+先取得这个仓库的完整目录，确认 Python ≥3.10。在该目录运行：
 
 ```sh
-git clone https://github.com/qixian771-spec/vps-node-rebuild-3xui.git \
-  ~/.codex/skills/vps-node-rebuild-3xui
+python3 scripts/skillctl.py validate
+python3 scripts/skillctl.py --help
 ```
 
-也可以让执行者先读取 `SKILL.md`，按工作路径只加载需要的 references。不需要对已有安装重复 clone，也不需要为技能更新重新安装 VPS。
+详细安装使用 `install --source <绝对源码目录> --destination <绝对新目录>`；父目录须存在，目的目录不得已存在，所有路径先核对且不含符号链接。完整安装说明见上表。manifest列出的入口、全部引用、资产/JS、辅助工具和许可一起安装；安装不需要root或网络。
 
-请求示例：
+示例请求：
 
-```text
-使用 vps-node-rebuild-3xui，核对现有节点，把它们放入 Clash 的一个手动选择组。
-国内直连，国外跟随我选择的节点，节点故障时连接失败，不自动换出口或直连。
-同时核对 Claude Desktop 和 CLI 的代理与 DNS 路径，并给出实测结果和未测项。
-在 Mac 上同时完成 DNS 和 WebRTC 防泄露，覆盖默认浏览器 Safari 与 Chrome。
-需要系统防绕行时先核对实际用户、核心身份、TUN 和现有防火墙，保留国内直连。
+> 使用这个 skill，只检查已有 Clash 的默认出口和 DNS，禁止切节点、重启应用或写配置；联网只允许明确列出的出口检测。先列证据与缺失项，检查完成后结束。
+
+修改任务则明确要改的对象、默认出口/分流政策、允许的重载层级和成功标准；已有授权无需重复确认。所有敏感材料存私有目录，不进入仓库。
+
+## 开发验证
+
+```sh
+python3 scripts/skillctl.py validate
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+node --test tests/webrtc.test.cjs
+git diff --check
 ```
 
-## 版本与边界
+前三条也能在完整安装目录中执行；`git diff --check` 仅在Git源码检出中运行。
 
-经验包含 3x-ui 三表客户端模型，以及 2026-09-30 对 Mihomo 1.19.29、Clash Verge 2.5.2、Claude Desktop 2.16120.0 的实测。不是对全部 fork 或未来版本的兼容承诺；执行前核对当前 schema、官方文档和运行配置。
+这些测试使用隔离目录、合成SQLite/日志和模拟ICE，不访问代理/VPS、不加载PF、不重启软件。GitHub Actions在Linux/macOS执行同样检查并验证包安装。真实业务检查必须单独取得授权并执行，不能拿CI代替。
 
-2026-10-11 补充 Mac DNS/PF 和 Safari 26.5.2、Chrome 154 的经验。Safari 隐藏 WebRTC 开关曾被应用恢复，不能据写入成功判定有效；最终采用并验证系统层防绕行。PF 模板需要按目标主机生成，不把案例 UID、TUN 名称或出口 IP 固化成部署参数。
+专题中的旧版本与日期是历史案例，不能直接记入新任务的通过结果。技术依据使用目标精确版本官方文档/源码；禁止联网时没有这些材料就停止版本相关步骤。
 
-2026-10-12 补充 Clash 重启验收：系统 DNS 被 TUN 启动逻辑覆写不等于解析已直出，必须核对实际接管和物理阻断；TCP53 正常不能替代 UDP53。配置重载、GUI 重启与整机重启分开记录。新增节点的出口测试与 GPT/Claude 长连接稳定性也分开，持续重连不能用“IP 检查通过”覆盖。
-
-`SKILL.md` 的 Frontmatter 不绑定用户节点、IP、账号或密钥。所有示例只提供配置结构，不能直接用于生产。不要将真实配置、数据库、凭据或聊天内容提交到本仓库。
-
-TUN、固定应用代理与系统级网络阻断是不同能力。技能要求报告实际范围，不保证任何状态下绝无泄漏，也不保证 Claude 账号不会受到风控。
-
-## 贡献
-
-Issue/PR 请说明触发条件、实际版本、观察证据、修改与验收方法。示例必须脱敏；明确区分“已配置”“已生效”“实测通过”。
-
-[MIT](LICENSE) © 2026 qixian771-spec
+[完整仓库](https://github.com/qixian771-spec/vps-node-rebuild-3xui) · [MIT](LICENSE)

@@ -123,43 +123,7 @@ macOS 用户配置位置为 `~/Library/Application Support/Claude-3p/configLibra
 | 网络路径 | 指定探针的 TLS 证书校验通过，连接链含 selector/所选节点，DNS 链符合政策 | 账号安全、所有 endpoint 都可用 |
 | 故障阻断 | 在隔离配置/进程中使所选路径失效后请求失败，其他节点不接管 | 生产 TUN 关闭后整个 OS 有 kill switch |
 
-只检查本次启动时间之后的代理行，不导出整份日志。下面片段是只读筛选器；把参数改为本次启动的**本地时间**，在用户自行启动或当前任务已授权启动之后执行，不会启动应用。
-
-```sh
-python3 - '2026-09-30 08:13:00' <<'PY'
-from pathlib import Path
-from datetime import datetime
-import json, re, sys
-since = datetime.strptime(sys.argv[1], '%Y-%m-%d %H:%M:%S')
-paths = [Path.home() / 'Library/Logs/Claude/main.log',
-         Path.home() / 'Library/Application Support/Claude/logs/main.log']
-found = []
-for path in paths:
-    if not path.is_file():
-        continue
-    with path.open('rb') as stream:
-        stream.seek(max(0, path.stat().st_size - 1024 * 1024))
-        lines = stream.read().decode('utf-8', 'replace').splitlines()
-    for line in lines:
-        if '[egress-proxy]' not in line:
-            continue
-        stamp = re.search(r'\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}', line)
-        if not stamp:
-            continue
-        time = datetime.strptime(stamp.group().replace('T', ' '),
-                                 '%Y-%m-%d %H:%M:%S')
-        if time < since:
-            continue
-        found.append({'time': stamp.group(),
-                      'fixed_local_proxy':
-                      'pinned to fixed proxy at 127.0.0.1:7890' in line,
-                      'os_proxy_ignored': 'OS proxy settings ignored' in line,
-                      'pac_detected': 'PAC script' in line})
-print(json.dumps({'proxy_startup_checks': found}, ensure_ascii=False))
-PY
-```
-
-筛选器只输出布尔值与时间。实际端口不为 `7890` 时同步改匹配值；无匹配应记 `not-confirmed`，不能猜测已采用。如检查 native helper 的 stdout，也只提取代理/启动状态，不打印账号、完整 URL、token 或聊天内容。
+本次启动日志使用 [操作契约 O8](operations.md) 的 `skillctl.py logcheck`，必须提供实际单一路径、带时区起点、日志时区和真实代理端口。退出 4 代表未确认，不能以无输出判通过；新版本文案不符就停止核对，不自动放宽匹配。
 
 对无凭据的公开 HTTPS 探针，HTTP `403` 与成功校验的 TLS 只能证明传输已抵达返回该响应的服务，**不代表 Claude 业务、登录或推理可用**。不要降低 TLS 校验，也不要自动拿真实 API key 或发送聊天来补齐验收。只统计本次明确探针的连接链与规则；没有业务操作授权时，把业务项保留为 `not-tested`。
 

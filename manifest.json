@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "files": [
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+    "manifest.json",
+    "scripts/skillctl.py",
+    "assets/macos-leak-guard.pf.in",
+    "assets/webrtc-probe.html",
+    "assets/webrtc-probe.js",
+    "docs/acceptance.md",
+    "docs/delivery-plan.md",
+    "references/checklist-template.md",
+    "references/clash-routing-dns.md",
+    "references/claude-network.md",
+    "references/command-recipes.md",
+    "references/installation.md",
+    "references/macos-leak-guard.md",
+    "references/operations.md",
+    "references/runbook.md",
+    "references/server.md",
+    "references/troubleshooting.md",
+    "tests/test_skillctl.py",
+    "tests/webrtc.test.cjs"
+  ]
+}
