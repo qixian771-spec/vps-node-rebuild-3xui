@@ -1,5 +1,7 @@
 # vps-node-rebuild-3xui
 
+> **总入口在 [claude-setup-kit](https://github.com/qixian771-spec/claude-setup-kit)**：只把那个链接发给 AI，它会按需要调用本仓库（建节点）、清理重置仓库和 Mac 环境镜像。单独用本仓库时从下面开始。
+
 供 AI 在没有历史聊天的情况下使用的执行技能：自有 3x-ui 节点部署/迁移/诊断、Clash 手动固定出口，以及按授权实施的 macOS DNS、浏览器和 Claude 网络保护。
 
 **这是有门槛的执行手册与离线辅助工具，不是跨版本一键部署器。** 住宅代理账户不能当作 SSH 权限；源码/合成测试通过不代表真实 VPS、浏览器或应用已通过。
